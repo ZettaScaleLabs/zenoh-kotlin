@@ -129,11 +129,45 @@ and in case of targetting Android you'll also need:
 > are needed. The generated JNI bindings and the native libraries come from
 > [zenoh-flat-jni](https://github.com/eclipse-zenoh/zenoh-flat-jni), resolved as
 > `org.eclipse.zenoh:zenoh-flat-jni` — a Kotlin Multiplatform library, so the JVM
-> or Android variant is selected automatically. To build against a sibling
-> `../zenoh-flat-jni` checkout instead, pass `-PuseLocalFlatJni=true`; that path
-> does build the native library from source and so needs a Rust toolchain (see
-> [rustup.rs](https://rustup.rs)). See [PUBLISHING.md](PUBLISHING.md) for how
-> releases work.
+> or Android variant is selected automatically. Building against its _source_
+> instead does need a Rust toolchain — see below. For releases, see
+> [PUBLISHING.md](PUBLISHING.md).
+
+## Where the native library comes from
+
+Three ways to build. Pick by what you are doing:
+
+| I want to… | build with | Rust needed |
+| --- | --- | --- |
+| just build or use the SDK | `./gradlew build` | no |
+| build the bindings from source too | `./gradlew build -PuseLocalJni=true` | yes |
+| build against my own checkout | `./gradlew build -PlocalJniDir=../zenoh-flat-jni` | yes |
+
+**The default** downloads `org.eclipse.zenoh:zenoh-flat-jni` from Maven Central
+with the native library already inside it. Nothing is compiled from Rust and no
+toolchain is needed.
+
+**`-PuseLocalJni=true`** builds the bindings from source, as `Cargo.toml`
+says — the usual Rust arrangement, and the one CI uses. A `git` dependency there
+means the exact commit recorded in `Cargo.lock` (resolved on the spot if there is
+no lockfile yet); a `path` means that directory. So
+
+```bash
+./gradlew jvmTest -PuseLocalJni=true
+```
+
+reproduces a CI run exactly. See [CI.md](CI.md) for how that commit is chosen and
+kept current.
+
+**`-PlocalJniDir=<path>`** points straight at a checkout, no `Cargo.toml` involved.
+Use it to try a branch or a scratch copy without editing anything.
+
+Both source options need a Rust toolchain ([rustup.rs](https://rustup.rs));
+Gradle drives cargo for you. To work further down the stack — on `zenoh-flat` or
+`zenoh` themselves — edit inside your `zenoh-flat-jni` checkout, whose own
+`Cargo.toml` points at them the same way.
+
+Releases always use the first option; see [PUBLISHING.md](PUBLISHING.md).
 
 ## <img src="jvm.png" alt="JVM" height="50"> JVM
 
@@ -209,17 +243,18 @@ gradle jvmTest
 ```
 
 By default this resolves `zenoh-flat-jni` from Maven Central, so no Rust
-toolchain is involved. To run the tests against a sibling `../zenoh-flat-jni`
-checkout instead — which is what CI does, and what you want when changing both
-repositories together — add `-PuseLocalFlatJni=true`:
+toolchain is involved. The two source options from
+[Where the native library comes from](#where-the-native-library-comes-from)
+apply here as well, and both compile the native library, so both need a Rust
+toolchain (see [rustup.rs](https://rustup.rs)):
 
 ```bash
-gradle jvmTest -PuseLocalFlatJni=true
+gradle jvmTest -PuseLocalJni=true                    # the pinned commit — what CI runs
+gradle jvmTest -PlocalJniDir=../zenoh-flat-jni       # your own checkout
 ```
 
-That substitutes the artifact through a Gradle composite build and does compile
-the native library from source, so it requires a Rust toolchain (see
-[rustup.rs](https://rustup.rs)).
+Use the second when you are changing both repositories together — the first
+tests the commit `Cargo.lock` pins, not your working tree.
 
 ## Logging
 
