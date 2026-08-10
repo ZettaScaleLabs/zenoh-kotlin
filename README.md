@@ -21,7 +21,7 @@ Check the website [zenoh.io](http://zenoh.io) and the [roadmap](https://github.c
 
 This repository provides a Kotlin binding based on the main [Zenoh implementation written in Rust](https://github.com/eclipse-zenoh/zenoh).
 
-The code relies on the Zenoh JNI native library, which written in Rust and communicates with the Kotlin layer via the Java Native Interface (JNI).
+The code relies on a native library written in Rust, communicating with the Kotlin layer through the Java Native Interface (JNI). That library is not built in this repository: it is generated and published separately as [zenoh-flat-jni](https://github.com/eclipse-zenoh/zenoh-flat-jni) and consumed here as an ordinary Maven dependency.
 
 ## <img src="doc_icon.png" alt="Zenoh" height="70"> Documentation
 
@@ -96,7 +96,7 @@ dependencyResolutionManagement {
 After that add to the dependencies in the app's `build.gradle.kts`:
 
 ```kotlin
-implementation("org.eclipse.zenoh:zenoh-kotlin-jvm:1.1.1")
+implementation("org.eclipse.zenoh:zenoh-kotlin:1.1.1")
 ```
 
 ### Platforms
@@ -118,13 +118,22 @@ For the moment, the library targets the following platforms:
 
 Basically:
 
-- Rust ([Installation guide](https://doc.rust-lang.org/cargo/getting-started/installation.html))
 - Kotlin ([Installation guide](https://kotlinlang.org/docs/getting-started.html#backend))
 - Gradle ([Installation guide](https://gradle.org/install/))
 
 and in case of targetting Android you'll also need:
 
 - Android SDK ([Installation guide](https://developer.android.com/about/versions/11/setup-sdk))
+
+> **Note:** zenoh-kotlin builds no native code, so no Rust toolchain and no NDK
+> are needed. The generated JNI bindings and the native libraries come from
+> [zenoh-flat-jni](https://github.com/eclipse-zenoh/zenoh-flat-jni), resolved as
+> `org.eclipse.zenoh:zenoh-flat-jni` — a Kotlin Multiplatform library, so the JVM
+> or Android variant is selected automatically. To build against a sibling
+> `../zenoh-flat-jni` checkout instead, pass `-PuseLocalFlatJni=true`; that path
+> does build the native library from source and so needs a Rust toolchain (see
+> [rustup.rs](https://rustup.rs)). See [PUBLISHING.md](PUBLISHING.md) for how
+> releases work.
 
 ## <img src="jvm.png" alt="JVM" height="50"> JVM
 
@@ -134,13 +143,9 @@ To publish a library for a JVM project into Maven local, run
 gradle publishJvmPublicationToMavenLocal
 ```
 
-This will first, trigger the compilation of Zenoh-JNI, and second publish the library into maven local, containing the native library
-as a resource that will be loaded during runtime.
+This publishes the zenoh-kotlin library to Maven local. The published artifact declares a dependency on `zenoh-flat-jni`, which provides the generated JNI bindings and the native binaries, and is released separately from the [zenoh-flat-jni](https://github.com/eclipse-zenoh/zenoh-flat-jni) repository.
 
-:warning: The native library will be compiled against the default rustup target on your machine, so although it may work fine
-for you on your desktop, the generated publication may not be working on another computer with a different operating system and/or a different cpu architecture.
-
-Once we have published the package, we should be able to find it under `~/.m2/repository/org/eclipse/zenoh/zenoh-kotlin-jvm/1.1.1`.
+Once we have published the package, we should be able to find it under `~/.m2/repository/org/eclipse/zenoh/zenoh-kotlin/1.1.1`.
 
 Finally, in the `build.gradle.kts` file of the project where you intend to use this library, add mavenLocal to the list of repositories and add zenoh-kotlin as a dependency:
 
@@ -151,46 +156,19 @@ repositories {
 }
 
 dependencies {
-    implementation("org.eclipse.zenoh:zenoh-kotlin-jvm:1.1.1")
+    implementation("org.eclipse.zenoh:zenoh-kotlin:1.1.1")
 }
 ```
 
 ## <img src="android-robot.png" alt="Android" height="50"> Android
 
-In order to use these bindings in a native Android project, what we will do is to build them as an Android NDK Library,
-publishing it into Maven local for us to be able to easily import it in our project.
-
-It is required to have the [NDK (native development kit)](https://developer.android.com/ndk) installed, since we are going to compile Zenoh JNI for multiple
-android native targets. The currently used NDK version is **26.0.10792818**.
-It can be set up by using Android Studio (go to `Preferences > Languages & Frameworks > Android SDK > SDK Tools`, tick `Show Package Details` and pick the right NDK version),
-or alternatively it can be found [here](https://developer.android.com/ndk/downloads).
-
-The native platforms we are going to target are the following ones:
-
-- x86
-- x86_64
-- arm
-- arm64
-
-Therefore, if they are not yet already added to the Rust toolchain, run:
-
-```bash
-rustup target add armv7-linux-androideabi; \
-rustup target add i686-linux-android; \
-rustup target add aarch64-linux-android; \
-rustup target add x86_64-linux-android
-```
-
-to install them.
-
-So, in order to publish the library onto Maven Local, run:
+In order to use these bindings in a native Android project, publish them into Maven local:
 
 ```bash
 gradle -Pandroid=true publishAndroidReleasePublicationToMavenLocal
 ```
 
-This will first trigger the compilation of the Zenoh-JNI for the previously mentioned targets, and secondly will
-publish the library, containing the native binaries.
+This publishes the zenoh-kotlin-android artifact to Maven local. It declares a dependency on `zenoh-flat-jni`, whose Android variant carries the prebuilt native libraries for all four ABIs, released separately from the [zenoh-flat-jni](https://github.com/eclipse-zenoh/zenoh-flat-jni) repository — no Rust toolchain and no NDK cross-compilation is required here.
 
 You should now be able to see the package under `~/.m2/repository/org/eclipse/zenoh/zenoh-kotlin-android/1.1.1`.
 
@@ -226,13 +204,22 @@ gradle dokkaGenerate
 
 ## Running the tests
 
-To run the tests, run:
-
 ```bash
 gradle jvmTest
 ```
 
-This will compile the native library on debug mode (if not already available) and run the tests afterward against the JVM target.
+By default this resolves `zenoh-flat-jni` from Maven Central, so no Rust
+toolchain is involved. To run the tests against a sibling `../zenoh-flat-jni`
+checkout instead — which is what CI does, and what you want when changing both
+repositories together — add `-PuseLocalFlatJni=true`:
+
+```bash
+gradle jvmTest -PuseLocalFlatJni=true
+```
+
+That substitutes the artifact through a Gradle composite build and does compile
+the native library from source, so it requires a Rust toolchain (see
+[rustup.rs](https://rustup.rs)).
 
 ## Logging
 
@@ -293,6 +280,6 @@ Then after that, add the dependency as usual:
 
 ```kotlin
 dependencies {
-    implementation("org.eclipse.zenoh:zenoh-kotlin-jvm:<version>")
+    implementation("org.eclipse.zenoh:zenoh-kotlin:<version>")
 }
 ```

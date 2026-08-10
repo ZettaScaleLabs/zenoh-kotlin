@@ -27,6 +27,7 @@ import io.zenoh.pubsub.AdvancedSubscriber
 import io.zenoh.pubsub.MatchingListener
 import io.zenoh.pubsub.SampleMissListener
 import io.zenoh.pubsub.Subscriber
+import java.lang.Thread.sleep
 import kotlin.test.*
 
 class AdvancedPubSubTest {
@@ -51,6 +52,8 @@ class AdvancedPubSubTest {
     fun setUp() {
         session = Session.open(Config.default()).getOrThrow()
         keyExpr = "example/testing/keyexpr".intoKeyExpr().getOrThrow()
+        // Initialize the sink before declaring the subscriber whose callback appends to it.
+        receivedSamples = ArrayList()
 
         val missDetectionConfig = MissDetectionConfig(HeartbeatMode.PeriodicHeartbeat(100))
 
@@ -69,14 +72,12 @@ class AdvancedPubSubTest {
         matchingSubscriber = subscriber.declareDetectPublishersSubscriber(callback = {sample -> matchingSamples.add(sample)}, history = true).getOrThrow()
         sampleMissListener = subscriber.declareSampleMissListener(callback = {miss -> sampleMisses++}).getOrThrow()
 
-        receivedSamples = ArrayList()
+        // Give publisher/subscriber detection and matching-status propagation a moment.
+        sleep(1000)
     }
 
     @AfterTest
     fun tearDown() {
-        assertTrue(matchingSamples.count() != 0)
-        assertTrue(hasMatchingSubscribers)
-
         matchingListener.close()
         publisher.close()
 
@@ -86,6 +87,11 @@ class AdvancedPubSubTest {
 
         session.close()
         keyExpr.close()
+
+        // session.close() should wait for pending callbacks to complete
+        // so checking the state of the test after closing the session
+        assertTrue(matchingSamples.count() != 0)
+        assertTrue(hasMatchingSubscribers)
     }
 
     @Test

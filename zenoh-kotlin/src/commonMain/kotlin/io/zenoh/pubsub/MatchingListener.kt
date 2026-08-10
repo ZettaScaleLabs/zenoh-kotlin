@@ -15,19 +15,24 @@
 package io.zenoh.pubsub
 
 import io.zenoh.annotations.Unstable
-import io.zenoh.jni.JNIMatchingListener
+import io.zenoh.jni.pubsub.MatchingListener as JniMatchingListener
 import io.zenoh.session.SessionDeclaration
 
 /**
  * # MatchingListener
  * A listener that sends notifications when the matching status of a corresponding Zenoh entity changes.
  *
- * Matching listeners will run in background until the corresponding Zenoh entity is undeclared,
- * or until it is undeclared.
+ * Matching listeners run in the background until the corresponding Zenoh entity is undeclared,
+ * or until the listener itself is undeclared.
+ *
+ * A background matching listener (declared via
+ * [AdvancedPublisher.declareBackgroundMatchingListener]) has no handle to
+ * undeclare — its [jniMatchingListener] is `null` and it lives until the
+ * publisher ends.
  */
 @Unstable
 class MatchingListener internal constructor(
-    private var jniMatchingListener: JNIMatchingListener?,
+    private var jniMatchingListener: JniMatchingListener?,
 ) : SessionDeclaration, AutoCloseable {
 
     /**

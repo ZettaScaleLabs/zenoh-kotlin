@@ -18,7 +18,6 @@ buildscript {
     }
     dependencies {
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0")
-        classpath("org.mozilla.rust-android-gradle:plugin:0.9.6")
         classpath("com.android.tools.build:gradle:7.4.2")
         classpath("com.gradleup.shadow:shadow-gradle-plugin:9.0.0-beta6")
     }
@@ -28,7 +27,6 @@ plugins {
     id("com.android.library") version "7.4.2" apply false
     id("org.jetbrains.kotlin.android") version "1.9.10" apply false
     id("org.jetbrains.kotlin.multiplatform") version "1.9.0" apply false
-    id("org.mozilla.rust-android-gradle.rust-android") version "0.9.6" apply false
     id("org.jetbrains.dokka") version "2.0.0" apply false
     id("com.adarshr.test-logger") version "3.2.0" apply false
     kotlin("plugin.serialization") version "1.9.0" apply false
@@ -56,9 +54,27 @@ nexusPublishing {
     }
 }
 
+val zenohFlatJniVersion: String by project
+
 subprojects {
     repositories {
         google()
         mavenCentral()
+
+        // Only reachable when a snapshot of the binding was explicitly asked
+        // for, which is how this SDK is rehearsed before zenoh-flat-jni has a
+        // real release. A release version never ends in -SNAPSHOT, so a release
+        // build cannot resolve a mutable artifact.
+        //
+        // includeGroup, not includeModule: the dependency names the root
+        // coordinate, but what Gradle downloads is zenoh-flat-jni-jvm or
+        // zenoh-flat-jni-android. Filtering to one module would hide those.
+        if (zenohFlatJniVersion.endsWith("-SNAPSHOT")) {
+            maven {
+                name = "centralSnapshots"
+                url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+                content { includeGroup("org.eclipse.zenoh") }
+            }
+        }
     }
 }

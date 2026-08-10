@@ -1,0 +1,88 @@
+package io.zenoh.ext
+
+import io.zenoh.bytes.ZBytes
+import io.zenoh.exceptions.zCall0
+import io.zenoh.jni.bytes.SerializationCodec
+import kotlin.reflect.KType
+import kotlin.reflect.typeOf
+
+/**
+ * Deserialize the [ZBytes] instance into an element of type [T].
+ *
+ * This function supports the following types:
+ * - [Boolean]
+ * - [Byte]
+ * - [Short]
+ * - [Int]
+ * - [Long]
+ * - [Float]
+ * - [Double]
+ * - [UByte]
+ * - [UShort]
+ * - [UInt]
+ * - [ULong]
+ * - [List]
+ * - [String]
+ * - [ByteArray]
+ * - [Map]
+ * - [Pair]
+ * - [Triple]
+ *
+ * **NOTE**
+ *
+ * This deserialization utility can be used across the Zenoh ecosystem with Zenoh
+ * versions based on other supported languages such as Rust, Python, C and C++.
+ * This works when the types are equivalent (a `Byte` corresponds to an `i8` in Rust, a `Short` to an `i16`, etc).
+ *
+ * ### Examples
+ *
+ * For a Boolean:
+ * ```
+ * val input: Boolean = true
+ * val zbytes = zSerialize(input).getOrThrow()
+ * val output = zDeserialize<Boolean>(zbytes).getOrThrow()
+ * check(input == output)
+ * ```
+ *
+ * For a List:
+ * ```
+ * val input: List<Int> = listOf(1, 2, 3, 4, 5)
+ * val zbytes = zSerialize(input).getOrThrow()
+ * val output = zDeserialize<List<Int>>(zbytes).getOrThrow()
+ * check(input == output)
+ * ```
+ *
+ * For a nested list:
+ * ```
+ * val input: List<List<Int>> = listOf(listOf(1, 2, 3))
+ * val zbytes = zSerialize(input).getOrThrow()
+ * val output = zDeserialize<List<List<Int>>>(zbytes).getOrThrow()
+ * check(input == output)
+ * ```
+ *
+ * For a combined list of maps:
+ * ```
+ * val input: List<Map<String, Int>> = listOf(mapOf("a" to 1, "b" to 2))
+ * val zbytes = zSerialize(input).getOrThrow()
+ * val output = zDeserialize<List<Map<String, Int>>>(zbytes).getOrThrow()
+ * check(input == output)
+ * ```
+ *
+ * For additional examples, checkout the [ZBytes examples](https://github.com/eclipse-zenoh/zenoh-kotlin/blob/main/examples/src/main/kotlin/io.zenoh/ZBytes.kt).
+ *
+ * @see ZBytes
+ * @return a [Result] with the deserialization.
+ */
+inline fun <reified T : Any> zDeserialize(zbytes: ZBytes): Result<T> =
+    zDeserializeImpl(zbytes, typeOf<T>()).mapCatching { it as T }
+
+/**
+ * Implementation of [zDeserialize]: builds a [SerializationCodec.SerdeType] from the [KType]
+ * and runs the **pure-Kotlin** [SerializationCodec] deserializer — no JNI crossing. Supports
+ * the Kotlin-specific `UByte`/`UShort`/`UInt`/`ULong`/`Pair`/`Triple` types in
+ * addition to the signed/collection types. Wired through [zCall0] exactly like
+ * a generated wrapper.
+ */
+@PublishedApi
+internal fun zDeserializeImpl(zbytes: ZBytes, type: KType): Result<Any> =
+    zCall0<Any>({ Unit }) { SerializationCodec.deserialize(zbytes.toBytes(), serdeTypeOf(type), it) }

@@ -16,32 +16,50 @@ package io.zenoh.pubsub
 
 import io.zenoh.annotations.Unstable
 import io.zenoh.exceptions.ZError
+import io.zenoh.exceptions.zCall
+import io.zenoh.exceptions.zCallUnit
 import io.zenoh.handlers.Callback
 import io.zenoh.handlers.ChannelHandler
 import io.zenoh.handlers.Handler
 import io.zenoh.handlers.SampleMissCallback
 import io.zenoh.handlers.SampleMissChannelHandler
 import io.zenoh.handlers.SampleMissHandler
-import io.zenoh.jni.JNIAdvancedSubscriber
+import io.zenoh.jni.VoidCallback
+import io.zenoh.jni.pubsub.AdvancedSubscriber as JniAdvancedSubscriber
+import io.zenoh.jni.pubsub.SampleMissListener as JniSampleMissListener
+import io.zenoh.jni.pubsub.Subscriber as JniSubscriber
 import io.zenoh.keyexpr.KeyExpr
 import io.zenoh.sample.Sample
+import io.zenoh.sampleCallbackOf
+import io.zenoh.sampleMissCallbackOf
 import io.zenoh.session.SessionDeclaration
 import kotlinx.coroutines.channels.Channel
 
 /**
  * # Advanced Subscriber
  *
- * A [Subscriber] with advanced capabilities.
+ * A [Subscriber] with advanced capabilities: it can query historical data,
+ * recover missed samples, detect the [AdvancedPublisher]s matching its key
+ * expression, and report missed samples via a [SampleMissListener].
+ *
+ * A background detect-publishers subscriber or sample-miss listener (declared
+ * via the `declareBackground*` methods) has no returnable handle — it lives
+ * until this [AdvancedSubscriber] is undeclared.
  *
  * @see Subscriber
+ * @see io.zenoh.Session.declareAdvancedSubscriber
  */
 @Unstable
 class AdvancedSubscriber<R> internal constructor(
-    val keyExpr: KeyExpr, val receiver: R, private var jniSubscriber: JNIAdvancedSubscriber?
+    val keyExpr: KeyExpr,
+    val receiver: R,
+    private var jniAdvancedSubscriber: JniAdvancedSubscriber?,
 ) : AutoCloseable, SessionDeclaration {
 
-    inline fun <reified T> invalidSubscriberResult(): Result<T> =
-        Result.failure(ZError("AdvancedSubscriber is not valid."))
+    companion object {
+        private fun <T> invalidSubscriberResult(): Result<T> =
+            Result.failure(ZError("AdvancedSubscriber is not valid."))
+    }
 
     /** Declares a subscriber to detect matching publishers.
      *
@@ -55,13 +73,8 @@ class AdvancedSubscriber<R> internal constructor(
         callback: Callback<Sample>,
         history: Boolean = false,
         onClose: (() -> Unit)? = null
-    ): Result<Subscriber<Unit>> {
-        val resolvedOnClose = fun() {
-            onClose?.invoke()
-        }
-        return jniSubscriber?.declareDetectPublishersSubscriber(keyExpr, history, callback, resolvedOnClose, Unit)?:
-        invalidSubscriberResult()
-    }
+    ): Result<Subscriber<Unit>> =
+        resolveDetectPublishersSubscriber(callback, history, onClose ?: {}, background = false, receiver = Unit)
 
     /** Declares a subscriber to detect matching publishers.
      *
@@ -76,15 +89,14 @@ class AdvancedSubscriber<R> internal constructor(
         history: Boolean = false,
         onClose: (() -> Unit)? = null,
         receiver: R
-    ): Result<Subscriber<R>> {
-        val resolvedOnClose = fun() {
-            handler.onClose()
-            onClose?.invoke()
-        }
-        val callback = Callback { t: Sample -> handler.handle(t) }
-        return jniSubscriber?.declareDetectPublishersSubscriber(keyExpr, history,callback, resolvedOnClose, receiver)?:
-            invalidSubscriberResult()
-    }
+    ): Result<Subscriber<R>> =
+        resolveDetectPublishersSubscriber(
+            Callback { handler.handle(it) },
+            history,
+            { handler.onClose(); onClose?.invoke() },
+            background = false,
+            receiver = receiver,
+        )
 
     /** Declares a subscriber to detect matching publishers.
      *
@@ -101,13 +113,13 @@ class AdvancedSubscriber<R> internal constructor(
         onClose: (() -> Unit)? = null,
     ): Result<Subscriber<Channel<Sample>>> {
         val channelHandler = ChannelHandler(channel)
-        val resolvedOnClose = fun() {
-            channelHandler.onClose()
-            onClose?.invoke()
-        }
-        val callback = Callback { t: Sample -> channelHandler.handle(t) }
-        return jniSubscriber?.declareDetectPublishersSubscriber(keyExpr, history,callback, resolvedOnClose, channelHandler.receiver())?:
-        invalidSubscriberResult()
+        return resolveDetectPublishersSubscriber(
+            Callback { channelHandler.handle(it) },
+            history,
+            { channelHandler.onClose(); onClose?.invoke() },
+            background = false,
+            receiver = channelHandler.receiver(),
+        )
     }
 
     /** Declares a background subscriber to detect matching publishers.
@@ -124,13 +136,8 @@ class AdvancedSubscriber<R> internal constructor(
         callback: Callback<Sample>,
         history: Boolean = false,
         onClose: (() -> Unit)? = null
-    ): Result<Unit> {
-        val resolvedOnClose = fun() {
-            onClose?.invoke()
-        }
-        return jniSubscriber?.declareBackgroundDetectPublishersSubscriber(keyExpr, history, callback, resolvedOnClose)?:
-        invalidSubscriberResult()
-    }
+    ): Result<Unit> =
+        resolveDetectPublishersSubscriber(callback, history, onClose ?: {}, background = true, receiver = Unit).map {}
 
     /** Declares a background subscriber to detect matching publishers.
      *
@@ -146,15 +153,14 @@ class AdvancedSubscriber<R> internal constructor(
         handler: Handler<Sample, R>,
         history: Boolean = false,
         onClose: (() -> Unit)? = null
-    ): Result<Unit> {
-        val resolvedOnClose = fun() {
-            handler.onClose()
-            onClose?.invoke()
-        }
-        val callback = Callback { t: Sample -> handler.handle(t) }
-        return jniSubscriber?.declareBackgroundDetectPublishersSubscriber(keyExpr, history,callback, resolvedOnClose)?:
-        invalidSubscriberResult()
-    }
+    ): Result<Unit> =
+        resolveDetectPublishersSubscriber(
+            Callback { handler.handle(it) },
+            history,
+            { handler.onClose(); onClose?.invoke() },
+            background = true,
+            receiver = handler.receiver(),
+        ).map {}
 
     /** Declares a background subscriber to detect matching publishers.
      *
@@ -173,13 +179,36 @@ class AdvancedSubscriber<R> internal constructor(
         onClose: (() -> Unit)? = null,
     ): Result<Unit> {
         val channelHandler = ChannelHandler(channel)
-        val resolvedOnClose = fun() {
-            channelHandler.onClose()
-            onClose?.invoke()
+        return resolveDetectPublishersSubscriber(
+            Callback { channelHandler.handle(it) },
+            history,
+            { channelHandler.onClose(); onClose?.invoke() },
+            background = true,
+            receiver = channelHandler.receiver(),
+        ).map {}
+    }
+
+    private fun <R2> resolveDetectPublishersSubscriber(
+        callback: Callback<Sample>,
+        history: Boolean,
+        onClose: () -> Unit,
+        background: Boolean,
+        receiver: R2,
+    ): Result<Subscriber<R2>> {
+        val s = jniAdvancedSubscriber ?: return invalidSubscriberResult()
+        val jniCallback = sampleCallbackOf { callback.run(it) }
+        val jniOnClose = VoidCallback { onClose() }
+        return if (background) {
+            // Background subscribers register no returnable handle — they live
+            // until the advanced subscriber ends, so the wrapper holds null.
+            zCallUnit { onBindingError, onError ->
+                s.declareBackgroundDetectPublishersSubscriber(jniCallback, jniOnClose, history, onBindingError, onError)
+            }.map { Subscriber(keyExpr, receiver, null) }
+        } else {
+            zCall({ JniSubscriber(0L) }) { onBindingError, onError ->
+                s.declareDetectPublishersSubscriber(jniCallback, jniOnClose, history, onBindingError, onError)
+            }.map { Subscriber(keyExpr, receiver, it) }
         }
-        val callback = Callback { t: Sample -> channelHandler.handle(t) }
-        return jniSubscriber?.declareBackgroundDetectPublishersSubscriber(keyExpr, history,callback, resolvedOnClose)?:
-        invalidSubscriberResult()
     }
 
     /** Declares a [SampleMissListener] to detect missed samples for ths [AdvancedSubscriber].
@@ -189,14 +218,11 @@ class AdvancedSubscriber<R> internal constructor(
      * @param callback: callback to be executed when missed samples detected
      * @param onClose: callback to be executed when associated [SampleMissListener] will be closed
      * */
-    fun declareSampleMissListener(callback: SampleMissCallback,
-                                onClose: (() -> Unit)? = null,): Result<SampleMissListener> {
-        val resolvedOnClose = fun() {
-            onClose?.invoke()
-        }
-        return jniSubscriber?.declareSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
-    }
+    fun declareSampleMissListener(
+        callback: SampleMissCallback,
+        onClose: (() -> Unit)? = null,
+    ): Result<SampleMissListener> =
+        resolveSampleMissListener(callback, onClose ?: {}, background = false)
 
     /** Declares a [SampleMissListener] to detect missed samples for ths [AdvancedSubscriber].
      *
@@ -205,16 +231,15 @@ class AdvancedSubscriber<R> internal constructor(
      * @param handler [Handler] implementation to handle the sample miss events. [Handler.onClose] will be called upon closing the [SampleMissListener].
      * @param onClose: callback to be executed when associated [SampleMissListener] will be closed
      * */
-    fun <R> declareSampleMissListener(handler: SampleMissHandler<R>,
-                                    onClose: (() -> Unit)? = null,): Result<SampleMissListener> {
-        val resolvedOnClose = fun() {
-            handler.onClose()
-            onClose?.invoke()
-        }
-        val callback = SampleMissCallback { miss: SampleMiss -> handler.handle(miss) }
-        return jniSubscriber?.declareSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
-    }
+    fun <R> declareSampleMissListener(
+        handler: SampleMissHandler<R>,
+        onClose: (() -> Unit)? = null,
+    ): Result<SampleMissListener> =
+        resolveSampleMissListener(
+            SampleMissCallback { handler.handle(it) },
+            { handler.onClose(); onClose?.invoke() },
+            background = false,
+        )
 
     /** Declares a [SampleMissListener] to detect missed samples for ths [AdvancedSubscriber].
      *
@@ -224,16 +249,16 @@ class AdvancedSubscriber<R> internal constructor(
      * Once the [SampleMissListener] is closed, the [Channel] is closed as well.
      * @param onClose: callback to be executed when associated [SampleMissListener] will be closed
      * */
-    fun <R> declareSampleMissListener(channel: Channel<SampleMiss>,
-                                      onClose: (() -> Unit)? = null,): Result<SampleMissListener> {
+    fun <R> declareSampleMissListener(
+        channel: Channel<Miss>,
+        onClose: (() -> Unit)? = null,
+    ): Result<SampleMissListener> {
         val channelHandler = SampleMissChannelHandler(channel)
-        val resolvedOnClose = fun() {
-            channelHandler.onClose()
-            onClose?.invoke()
-        }
-        val callback = SampleMissCallback { miss: SampleMiss -> channelHandler.handle(miss) }
-        return jniSubscriber?.declareSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
+        return resolveSampleMissListener(
+            SampleMissCallback { channelHandler.handle(it) },
+            { channelHandler.onClose(); onClose?.invoke() },
+            background = false,
+        )
     }
 
     /** Declares a background sample miss listener to detect missed samples for ths [AdvancedSubscriber].
@@ -245,14 +270,11 @@ class AdvancedSubscriber<R> internal constructor(
      * @param callback: callback to be executed when missed samples detected
      * @param onClose: callback to be executed when associated [AdvancedSubscriber] will be closed
      * */
-    fun declareBackgroundSampleMissListener(callback: SampleMissCallback,
-                                  onClose: (() -> Unit)? = null,): Result<Unit> {
-        val resolvedOnClose = fun() {
-            onClose?.invoke()
-        }
-        return jniSubscriber?.declareBackgroundSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
-    }
+    fun declareBackgroundSampleMissListener(
+        callback: SampleMissCallback,
+        onClose: (() -> Unit)? = null,
+    ): Result<Unit> =
+        resolveSampleMissListener(callback, onClose ?: {}, background = true).map {}
 
     /** Declares a background sample miss listener to detect missed samples for ths [AdvancedSubscriber].
      *
@@ -264,16 +286,15 @@ class AdvancedSubscriber<R> internal constructor(
      * [Handler.onClose] will be called upon closing the [AdvancedSubscriber].
      * @param onClose: callback to be executed when associated [AdvancedSubscriber] will be closed
      * */
-    fun <R> declareBackgroundSampleMissListener(handler: SampleMissHandler<R>,
-                                      onClose: (() -> Unit)? = null,): Result<Unit> {
-        val resolvedOnClose = fun() {
-            handler.onClose()
-            onClose?.invoke()
-        }
-        val callback = SampleMissCallback { miss: SampleMiss -> handler.handle(miss) }
-        return jniSubscriber?.declareBackgroundSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
-    }
+    fun <R> declareBackgroundSampleMissListener(
+        handler: SampleMissHandler<R>,
+        onClose: (() -> Unit)? = null,
+    ): Result<Unit> =
+        resolveSampleMissListener(
+            SampleMissCallback { handler.handle(it) },
+            { handler.onClose(); onClose?.invoke() },
+            background = true,
+        ).map {}
 
     /** Declares a background sample miss listener to detect missed samples for ths [AdvancedSubscriber].
      *
@@ -285,34 +306,50 @@ class AdvancedSubscriber<R> internal constructor(
      * Once the [AdvancedSubscriber] is closed, the [Channel] is closed as well.
      * @param onClose: callback to be executed when associated [AdvancedSubscriber] will be closed
      * */
-    fun <R> declareBackgroundSampleMissListener(channel: Channel<SampleMiss>,
-                                      onClose: (() -> Unit)? = null,): Result<Unit> {
+    fun <R> declareBackgroundSampleMissListener(
+        channel: Channel<Miss>,
+        onClose: (() -> Unit)? = null,
+    ): Result<Unit> {
         val channelHandler = SampleMissChannelHandler(channel)
-        val resolvedOnClose = fun() {
-            channelHandler.onClose()
-            onClose?.invoke()
-        }
-        val callback = SampleMissCallback { miss: SampleMiss -> channelHandler.handle(miss) }
-        return jniSubscriber?.declareBackgroundSampleMissListener(callback, resolvedOnClose)?:
-            invalidSubscriberResult()
+        return resolveSampleMissListener(
+            SampleMissCallback { channelHandler.handle(it) },
+            { channelHandler.onClose(); onClose?.invoke() },
+            background = true,
+        ).map {}
     }
 
+    private fun resolveSampleMissListener(
+        callback: SampleMissCallback,
+        onClose: () -> Unit,
+        background: Boolean,
+    ): Result<SampleMissListener> {
+        val s = jniAdvancedSubscriber ?: return invalidSubscriberResult()
+        val jniCallback = sampleMissCallbackOf { callback.run(it) }
+        val jniOnClose = VoidCallback { onClose() }
+        return if (background) {
+            zCallUnit { onBindingError, onError ->
+                s.declareBackgroundSampleMissListener(jniCallback, jniOnClose, onBindingError, onError)
+            }.map { SampleMissListener(null) }
+        } else {
+            zCall({ JniSampleMissListener(0L) }) { onBindingError, onError ->
+                s.declareSampleMissListener(jniCallback, jniOnClose, onBindingError, onError)
+            }.map { SampleMissListener(it) }
+        }
+    }
 
-
-    
     /**
      * Returns `true` if the subscriber is still running.
      */
     fun isValid(): Boolean {
-        return jniSubscriber != null
+        return jniAdvancedSubscriber != null
     }
 
     /**
      * Undeclares the subscriber. After calling this function, the subscriber won't be receiving messages anymore.
      */
     override fun undeclare() {
-        jniSubscriber?.close()
-        jniSubscriber = null
+        jniAdvancedSubscriber?.close()
+        jniAdvancedSubscriber = null
     }
 
     /**

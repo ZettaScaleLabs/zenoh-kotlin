@@ -26,6 +26,34 @@ class ParametersTest {
     }
 
     @Test
+    fun `parsing accepts any remote input with Rust semantics`() {
+        // Parsing is total on attacker-controlled input, exactly as the Rust
+        // layer (a selector's parameters are an unvalidated string view).
+
+        // Duplicated parameter name: accepted, the FIRST occurrence wins on get.
+        assertEquals("1", Parameters.from("a=1;a=2").getOrThrow().get("a"))
+
+        // No percent-decoding: the value is kept verbatim.
+        assertEquals("%zz", Parameters.from("k=%zz").getOrThrow().get("k"))
+        assertEquals("%20", Parameters.from("k=%20").getOrThrow().get("k"))
+
+        // Value containing '=': split on the FIRST '=' only.
+        assertEquals("b=c", Parameters.from("a=b=c").getOrThrow().get("a"))
+
+        // Flag without a value, empty chunks, blank input: all accepted.
+        assertEquals("", Parameters.from("flag").getOrThrow().get("flag"))
+        assertEquals("1", Parameters.from(";;a=1;;").getOrThrow().get("a"))
+        assertTrue(Parameters.from("").getOrThrow().isEmpty())
+
+        // The string round-trips verbatim (duplicates preserved) until an
+        // insert/remove normalizes it.
+        val p = Parameters.from("a=1;a=2;flag").getOrThrow()
+        assertEquals("a=1;a=2;flag", p.toString())
+        p.insert("a", "3")
+        assertEquals("flag;a=3", p.toString())
+    }
+
+    @Test
     fun `should return list of values split by separator`() {
         val parameters =  Parameters.from("a=1;b=2;c=3|4|5;d=6").getOrThrow()
 
